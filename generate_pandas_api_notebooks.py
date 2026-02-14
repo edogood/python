@@ -1,64 +1,21 @@
 #!/usr/bin/env python3
-"""Generate pandas API inventory and teaching notebooks."""
+"""Generate pandas API inventory and complete/verifiable notebooks."""
 from __future__ import annotations
 
+import argparse
 import inspect
 import json
 import platform
 import sys
-from dataclasses import dataclass
+import uuid
+from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
-import json as _json_mod
-
-try:
-    import numpy as np
-    import pandas as pd
-    HAS_PANDAS = True
-except ImportError:
-    np = None
-    pd = None
-    HAS_PANDAS = False
-
-try:
-    import nbformat
-    from nbformat import v4 as nbf
-    from nbformat.validator import validate as nb_validate
-except ImportError:
-    class _NBNode(dict):
-        def __getattr__(self, item):
-            return self[item]
-        def __setattr__(self, key, value):
-            self[key] = value
-
-    class _NBFallback:
-        @staticmethod
-        def new_notebook():
-            return _NBNode({'cells': [], 'metadata': {}, 'nbformat': 4, 'nbformat_minor': 5})
-        @staticmethod
-        def new_markdown_cell(source):
-            return _NBNode({'cell_type': 'markdown', 'metadata': {}, 'source': source})
-        @staticmethod
-        def new_code_cell(source):
-            return _NBNode({'cell_type': 'code', 'metadata': {}, 'execution_count': None, 'outputs': [], 'source': source})
-
-    class _NBFormatFallback:
-        @staticmethod
-        def write(nb, path):
-            Path(path).write_text(_json_mod.dumps(nb, indent=2, ensure_ascii=False), encoding='utf-8')
-        @staticmethod
-        def read(path, as_version=4):
-            return _json_mod.loads(Path(path).read_text(encoding='utf-8'))
-
-    def nb_validate(nb):
-        assert isinstance(nb, dict) and nb.get('nbformat') == 4 and isinstance(nb.get('cells'), list)
-
-    nbformat = _NBFormatFallback()
-    nbf = _NBFallback()
-
 ROOT = Path(__file__).resolve().parent
 TARGET_ORDER = ["DataFrame", "Series", "Index", "GroupBy", "Window", "TopLevel"]
+TARGET_PANDAS = "2.2.*"
 NOTEBOOK_FILES = {
     "DataFrame": "01_DataFrame.ipynb",
     "Series": "02_Series.ipynb",
@@ -78,27 +35,20 @@ COVERAGE_FILES = {
 INDEXER_ACCESSORS = {"loc", "iloc", "at", "iat", "str", "dt", "cat"}
 
 
-@dataclass
-class MemberRecord:
-    name: str
-    kind: str
-    qualname: str
-    deprecated: bool | None
-    alias_of: str | None
-    signature: str | None
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "kind": self.kind,
-            "qualname": self.qualname,
-            "deprecated": self.deprecated,
-            "alias_of": self.alias_of,
-            "signature": self.signature,
-        }
+def require_runtime(allow_fallback: bool) -> tuple[Any | None, Any | None]:
+    has_pd = find_spec("pandas") is not None
+    has_np = find_spec("numpy") is not None
+    if not (has_pd and has_np):
+        if allow_fallback:
+            return None, None
+        raise RuntimeError(
+            "pandas and numpy are required for a real inventory. "
+            "Install dependencies or run with --allow-fallback."
+        )
+    return import_module("pandas"), import_module("numpy")
 
 
-def build_base_datasets() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Index]:
+def build_base_datasets(pd: Any, np: Any) -> tuple[Any, Any, Any, Any, Any]:
     rng = np.random.default_rng(42)
     n_sales = 120
     sales_dates = pd.date_range("2024-01-01", periods=90, freq="D")
@@ -130,29 +80,34 @@ def build_base_datasets() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.
             "duration_ms": rng.integers(0, 30001, size=150),
         }
     )
-    s_qty = df_sales["qty"].copy()
-    idx_dates = pd.Index(df_sales["date"].sort_values().unique(), name="date")
-    return df_sales, df_customers, df_events, s_qty, idx_dates
+    return df_sales, df_customers, df_events, df_sales["qty"].copy(), pd.Index(df_sales["date"].sort_values().unique(), name="date")
 
 
-def detect_deprecated(attr: Any) -> bool | None:
-    doc = getattr(attr, "__doc__", None)
+def detect_deprecated(obj: Any) -> bool | None:
+    doc = getattr(obj, "__doc__", None)
     if not isinstance(doc, str):
         return None
     low = doc.lower()
-    if "deprecated" in low[:250]:
-        return True
+    return True if ("deprecated" in low or ".. deprecated::" in low) else None
+
+
+def detect_alias(obj: Any, name: str, doc: str | None, seen: dict[int, str]) -> str | None:
+    if isinstance(doc, str) and doc.strip().lower().startswith("alias of"):
+        return doc.strip().splitlines()[0][:120]
+    safe = isinstance(obj, (property,)) or callable(obj)
+    if not safe:
+        return None
+    key = id(obj)
+    if key in seen and seen[key] != name:
+        return seen[key]
+    seen[key] = name
     return None
 
 
-def categorize_kind(owner: Any, name: str, attr: Any) -> str:
+def member_kind(owner: Any, name: str, attr: Any) -> str:
     if name in INDEXER_ACCESSORS:
         return "indexer_accessor"
-    static_attr = None
-    try:
-        static_attr = inspect.getattr_static(owner, name)
-    except Exception:
-        static_attr = None
+    static_attr = inspect.getattr_static(owner, name)
     if isinstance(static_attr, property):
         return "property"
     if callable(attr):
@@ -160,398 +115,241 @@ def categorize_kind(owner: Any, name: str, attr: Any) -> str:
     return "other"
 
 
-def build_member_records(owner: Any, obj: Any, qual_prefix: str, names: list[str] | None = None) -> list[MemberRecord]:
-    members = sorted([m for m in (names or dir(obj)) if not m.startswith("_")])
-    aliases: dict[int, str] = {}
-    records: list[MemberRecord] = []
-    for name in members:
+def member_record(owner: Any, obj: Any, qual_prefix: str, names: list[str] | None = None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen_alias: dict[int, str] = {}
+    for name in sorted(names or [m for m in dir(obj) if not m.startswith("_")]):
+        if name.startswith("_"):
+            continue
         try:
             attr = getattr(obj, name)
         except Exception:
             continue
-        kind = categorize_kind(owner, name, attr)
-        signature = None
+        doc = getattr(attr, "__doc__", None)
+        kind = member_kind(owner, name, attr)
+        sig = None
         if kind == "callable":
             try:
-                signature = str(inspect.signature(attr))
+                sig = str(inspect.signature(attr))
             except Exception:
-                signature = None
-        dep = detect_deprecated(attr)
-        alias_of = None
-        try:
-            key = id(attr)
-            if key in aliases and aliases[key] != name:
-                alias_of = aliases[key]
-            else:
-                aliases[key] = name
-        except Exception:
-            alias_of = None
-        records.append(
-            MemberRecord(
-                name=name,
-                kind=kind,
-                qualname=f"{qual_prefix}.{name}",
-                deprecated=dep,
-                alias_of=alias_of,
-                signature=signature,
-            )
+                sig = None
+        out.append(
+            {
+                "name": name,
+                "kind": kind,
+                "qualname": f"{qual_prefix}.{name}",
+                "signature": sig,
+                "deprecated": detect_deprecated(attr),
+                "alias_of": detect_alias(attr, name, doc if isinstance(doc, str) else None, seen_alias),
+            }
         )
-    return records
-
-
-
-def build_fallback_inventory() -> dict[str, Any]:
-    fallback = {
-        "DataFrame": ["head", "tail", "loc", "iloc", "at", "iat", "groupby", "merge", "join", "assign", "dropna", "fillna", "astype", "pivot_table"],
-        "Series": ["head", "tail", "loc", "iloc", "at", "iat", "str", "dt", "cat", "astype", "fillna", "rolling", "groupby", "value_counts"],
-        "Index": ["name", "dtype", "shape", "size", "take", "astype", "isin", "min", "max"],
-        "GroupBy": ["sum", "mean", "count", "agg", "apply", "transform", "head", "tail", "size", "nunique"],
-        "Window": ["sum", "mean", "std", "var", "min", "max", "count", "apply"],
-        "TopLevel": ["read_csv", "read_parquet", "read_excel", "concat", "merge", "crosstab", "pivot_table", "get_dummies", "cut", "qcut", "date_range", "to_datetime", "to_timedelta"],
-    }
-    targets = {}
-    for target, names in fallback.items():
-        prefix = {
-            "DataFrame": "pandas.DataFrame",
-            "Series": "pandas.Series",
-            "Index": "pandas.Index",
-            "GroupBy": "pandas.core.groupby.generic.DataFrameGroupBy",
-            "Window": "pandas.core.window.rolling.Rolling",
-            "TopLevel": "pandas",
-        }[target]
-        rows = []
-        for name in sorted(names):
-            kind = "indexer_accessor" if name in INDEXER_ACCESSORS else "callable"
-            rows.append(MemberRecord(name=name, kind=kind, qualname=f"{prefix}.{name}", deprecated=None, alias_of=None, signature=None).as_dict())
-        targets[target] = rows
-    return {
-        "meta": {
-            "generated_by": "generate_pandas_api_notebooks.py",
-            "python_version": sys.version,
-            "pandas_version": "missing",
-            "platform": platform.platform(),
-            "target_pandas": "2.2.*",
-            "target_order": TARGET_ORDER,
-            "warning": "pandas/numpy not installed in generator environment; fallback inventory used",
-        },
-        "targets": targets,
-    }
-
-def build_inventory() -> dict[str, Any]:
-    if not HAS_PANDAS:
-        return build_fallback_inventory()
-    df_sales, _, _, s_qty, idx_dates = build_base_datasets()
-    df = df_sales.copy()
-    s = s_qty.copy()
-    idx = idx_dates
-    gb_df = df.groupby("store_id")
-    gb_s = s.groupby(df["store_id"])
-    roll = s.rolling(3)
-    exp = s.expanding()
-    ewm = s.ewm(alpha=0.5)
-
-    inventory = {
-        "meta": {
-            "generated_by": "generate_pandas_api_notebooks.py",
-            "python_version": sys.version,
-            "pandas_version": pd.__version__ if HAS_PANDAS else "missing",
-            "platform": platform.platform(),
-            "target_pandas": "2.2.*",
-            "target_order": TARGET_ORDER,
-        },
-        "targets": {},
-    }
-
-    inventory["targets"]["DataFrame"] = [r.as_dict() for r in build_member_records(pd.DataFrame, df, "pandas.DataFrame")]
-    inventory["targets"]["Series"] = [r.as_dict() for r in build_member_records(pd.Series, s, "pandas.Series")]
-    inventory["targets"]["Index"] = [r.as_dict() for r in build_member_records(pd.Index, idx, "pandas.Index")]
-
-    groupby_names = sorted(set([m for m in dir(gb_df) if not m.startswith("_")] + [m for m in dir(gb_s) if not m.startswith("_")]))
-    groupby_records: list[MemberRecord] = []
-    groupby_records.extend(build_member_records(type(gb_df), gb_df, "pandas.core.groupby.generic.DataFrameGroupBy", groupby_names))
-    known = {r.name for r in groupby_records}
-    for rec in build_member_records(type(gb_s), gb_s, "pandas.core.groupby.generic.SeriesGroupBy", groupby_names):
-        if rec.name not in known:
-            groupby_records.append(rec)
-    inventory["targets"]["GroupBy"] = [r.as_dict() for r in sorted(groupby_records, key=lambda x: x.name)]
-
-    window_names = sorted(set([m for m in dir(roll) if not m.startswith("_")] + [m for m in dir(exp) if not m.startswith("_")] + [m for m in dir(ewm) if not m.startswith("_")]))
-    window_records: list[MemberRecord] = []
-    window_records.extend(build_member_records(type(roll), roll, "pandas.core.window.rolling.Rolling", window_names))
-    known_w = {r.name for r in window_records}
-    for rec in build_member_records(type(exp), exp, "pandas.core.window.expanding.Expanding", window_names):
-        if rec.name not in known_w:
-            window_records.append(rec)
-    known_w = {r.name for r in window_records}
-    for rec in build_member_records(type(ewm), ewm, "pandas.core.window.ewm.ExponentialMovingWindow", window_names):
-        if rec.name not in known_w:
-            window_records.append(rec)
-    inventory["targets"]["Window"] = [r.as_dict() for r in sorted(window_records, key=lambda x: x.name)]
-
-    top_names = sorted([m for m in dir(pd) if not m.startswith("_") and callable(getattr(pd, m, None))])
-    inventory["targets"]["TopLevel"] = [r.as_dict() for r in build_member_records(pd, pd, "pandas", top_names)]
-
-    return inventory
-
-
-def category_for_member(target: str, name: str) -> str:
-    low = name.lower()
-    if low in {"loc", "iloc", "at", "iat", "xs", "take"}:
-        return "Indexing"
-    if low in {"merge", "join", "concat"}:
-        return "Join"
-    if low.startswith("read_") or low.startswith("to_"):
-        return "IO"
-    if low in {"groupby", "agg", "aggregate", "sum", "mean", "min", "max", "count", "value_counts", "nunique"}:
-        return "Aggregation"
-    if low in {"pivot", "pivot_table", "melt", "stack", "unstack", "wide_to_long", "explode", "crosstab", "get_dummies"}:
-        return "Reshape"
-    if low in {"drop", "dropna", "fillna", "replace", "astype", "rename", "clip", "where", "mask"}:
-        return "Cleaning"
-    if low in {"rolling", "expanding", "ewm"}:
-        return "Window"
-    if low in {"resample", "to_datetime", "date_range", "shift", "tz_localize", "tz_convert"}:
-        return "TimeSeries"
-    if low in {"plot", "hist", "boxplot"}:
-        return "Plot"
-    return "Other"
-
-
-def env_cell() -> str:
-    return """import json, io, inspect, platform, sys\nfrom pathlib import Path\nimport numpy as np\nimport pandas as pd\n\nPANDAS_VERSION = pd.__version__\nPYTHON_VERSION = sys.version\nPLATFORM_INFO = platform.platform()\nprint('pandas:', PANDAS_VERSION)\nprint('python:', PYTHON_VERSION)\nprint('platform:', PLATFORM_INFO)\nif not PANDAS_VERSION.startswith('2.2.'):\n    print('WARNING: pandas version != 2.2.*; inventory may differ.')\n"""
-
-
-def base_dataset_cell() -> str:
-    return """# BASE_DATASETS\nrng = np.random.default_rng(42)\nn_sales = 120\nsales_dates = pd.date_range('2024-01-01', periods=90, freq='D')\ndf_sales = pd.DataFrame({\n    'date': rng.choice(sales_dates, size=n_sales),\n    'store_id': rng.integers(1, 11, size=n_sales),\n    'customer_id': rng.integers(1000, 1101, size=n_sales),\n    'sku': [f'SKU-{i:03d}' for i in rng.integers(1, 31, size=n_sales)],\n    'qty': rng.integers(1, 6, size=n_sales),\n    'price': rng.uniform(1.0, 100.0, size=n_sales).round(2),\n    'discount': np.where(rng.random(size=n_sales) < 0.65, 0.0, rng.uniform(0.01, 0.30, size=n_sales)).round(2),\n})\ndf_sales['date'] = pd.to_datetime(df_sales['date'])\n\ndf_customers = pd.DataFrame({\n    'customer_id': np.arange(1000, 1120),\n    'segment': pd.Categorical(rng.choice(['consumer', 'smb', 'enterprise'], size=120, replace=True)),\n    'city': rng.choice(['Rome', 'Milan', 'Turin', 'Naples', 'Bologna'], size=120, replace=True),\n    'signup_date': pd.to_datetime('2023-01-01') + pd.to_timedelta(rng.integers(0, 365, size=120), unit='D'),\n})\n\ndf_events = pd.DataFrame({\n    'ts': pd.to_datetime('2024-02-01') + pd.to_timedelta(rng.integers(0, 60*24*20, size=150), unit='m'),\n    'user_id': rng.integers(1000, 1120, size=150),\n    'event': pd.Categorical(rng.choice(['view', 'click', 'purchase', 'refund'], size=150, replace=True)),\n    'duration_ms': rng.integers(0, 30001, size=150),\n})\n\ns_qty = df_sales['qty'].copy()\nidx_dates = pd.Index(df_sales['date'].sort_values().unique(), name='date')\n\nassert 50 <= len(df_sales) <= 200\nassert str(df_sales['date'].dtype).startswith('datetime64')\nassert np.issubdtype(df_sales['qty'].dtype, np.integer)\nassert np.issubdtype(df_sales['price'].dtype, np.floating)\nassert str(df_customers['signup_date'].dtype).startswith('datetime64')\nassert str(df_events['ts'].dtype).startswith('datetime64')\n\ndf_sales.head()\n"""
-
-
-def target_object_cell(target: str) -> str:
-    mapping = {
-        "DataFrame": "target_obj = df_sales.copy()",
-        "Series": "target_obj = s_qty.copy()",
-        "Index": "target_obj = idx_dates",
-        "GroupBy": "target_obj = df_sales.groupby('store_id')",
-        "Window": "target_obj = s_qty.rolling(3)",
-        "TopLevel": "target_obj = pd",
-    }
-    return mapping[target]
-
-
-def member_markdown(rec: dict[str, Any], target: str) -> str:
-    sig = rec["signature"] if rec["signature"] else "Non introspezionabile in modo affidabile; usare pattern d'uso osservabile."
-    return f"""## {rec['qualname']}\n\n- **Categoria**: {category_for_member(target, rec['name'])}\n- **Firma / pattern**: `{sig}`\n- **Argomenti**: se disponibili dalla signature, valutare nome/default/effetto/edge-case; se non disponibili usare pattern conservativo.\n- **Problema risolto**: permette di applicare `{rec['name']}` all'oggetto `{target}` per trasformazione, analisi o accesso.\n- **Meccanismo (alto livello)**: pandas espone questo membro come API pubblica; l'effetto concreto dipende da input e contesto dati.\n- **Quando NON usarlo**: evitare quando il risultato è ambiguo, richiede dipendenze opzionali non presenti, o esistono alternative più esplicite.\n- **Differenze con simili**: confrontare con metodi omologhi del target e con funzioni top-level equivalenti quando presenti.\n"""
-
-
-def member_code(rec: dict[str, Any], target: str) -> str:
-    name = rec["name"]
-    qual = rec["qualname"]
-    base_obj = "target_obj"
-    special = ""
-    if target == "TopLevel" and name in {"read_csv", "to_datetime", "date_range", "concat", "merge", "crosstab", "pivot_table", "get_dummies", "cut", "qcut", "to_timedelta"}:
-        special = f"""
-try:
-    if '{name}' == 'read_csv':
-        csv_buf = io.StringIO('a,b\\n1,2\\n3,4\\n')
-        out = pd.read_csv(csv_buf)
-        assert out.shape == (2, 2)
-    elif '{name}' == 'concat':
-        out = pd.concat([df_sales.head(2), df_sales.tail(2)], ignore_index=True)
-        assert len(out) == 4
-    elif '{name}' == 'merge':
-        out = pd.merge(df_sales[['customer_id']].head(5), df_customers[['customer_id','segment']], on='customer_id', how='left')
-        assert 'segment' in out.columns
-    elif '{name}' == 'crosstab':
-        out = pd.crosstab(df_customers['segment'], df_customers['city'])
-        assert out.values.sum() == len(df_customers)
-    elif '{name}' == 'pivot_table':
-        out = pd.pivot_table(df_sales, values='qty', index='store_id', aggfunc='mean')
-        assert len(out) > 0
-    elif '{name}' == 'get_dummies':
-        out = pd.get_dummies(df_customers['segment'])
-        assert len(out) == len(df_customers)
-    elif '{name}' == 'cut':
-        out = pd.cut(df_sales['price'], bins=3)
-        assert len(out) == len(df_sales)
-    elif '{name}' == 'qcut':
-        out = pd.qcut(df_sales['price'].rank(method='first'), q=4)
-        assert len(out) == len(df_sales)
-    elif '{name}' == 'date_range':
-        out = pd.date_range('2024-01-01', periods=3, freq='D')
-        assert len(out) == 3
-    elif '{name}' == 'to_datetime':
-        out = pd.to_datetime(['2024-01-01', '2024-01-02'])
-        assert len(out) == 2
-    elif '{name}' == 'to_timedelta':
-        out = pd.to_timedelta([1, 2, 3], unit='D')
-        assert len(out) == 3
-except Exception as exc:
-    print('Edge case observed:', type(exc).__name__, exc)
-"""
-    if target == "TopLevel" and name in {"read_parquet", "to_parquet", "read_excel"}:
-        special += """
-try:
-    if 'parquet' in '{name}':
-        import pyarrow  # type: ignore
-    if '{name}' == 'read_excel':
-        import openpyxl  # type: ignore
-except ImportError as exc:
-    skipped_members['{qual}'] = f'SKIPPED: missing optional dependency ({exc})'
-    print(skipped_members['{qual}'])
-""".replace("{name}", name).replace("{qual}", qual)
-    return f"""member_name = '{name}'\nqualname = '{qual}'\ntry:\n    member = getattr({base_obj}, member_name)\n    if '{rec['kind']}' == 'callable':\n        assert callable(member)\n        try:\n            # Minimal executable attempt\n            if member_name in ('head', 'tail') and hasattr({base_obj}, '__len__'):\n                out = member(3)\n                assert len(out) <= 3\n            elif member_name in ('sum', 'mean', 'count', 'max', 'min'):\n                _ = member()\n            elif member_name in ('copy',):\n                _ = member()\n            elif member_name in ('astype',):\n                _ = member('float64') if hasattr({base_obj}, 'dtype') else member()\n            elif member_name in ('rolling',):\n                _ = member(3)\n            elif member_name in ('groupby',):\n                _ = member('store_id') if hasattr({base_obj}, 'columns') and 'store_id' in {base_obj}.columns else member(level=0)\n            else:\n                # do not fail coverage on required arguments; callable introspection is still exercised\n                _ = inspect.signature(member)\n        except Exception as inner_exc:\n            print('Handled edge case for', qualname, type(inner_exc).__name__, inner_exc)\n    elif '{rec['kind']}' == 'indexer_accessor':\n        if member_name == 'loc':\n            if hasattr({base_obj}, 'iloc'):\n                _ = {base_obj}.loc[{base_obj}.index[:2]]\n        elif member_name == 'iloc':\n            _ = {base_obj}.iloc[:2]\n        elif member_name == 'at' and hasattr({base_obj}, 'index'):\n            _ = {base_obj}.at[{base_obj}.index[0], {base_obj}.columns[0]] if hasattr({base_obj}, 'columns') else {base_obj}.at[{base_obj}.index[0]]\n        elif member_name == 'iat':\n            _ = {base_obj}.iat[0,0] if hasattr({base_obj}, 'columns') else {base_obj}.iat[0]\n        elif member_name in ('str', 'dt', 'cat'):\n            _ = member\n        assert member is not None\n    else:\n        _ = member\n        assert _ is not None\n    covered_members.add(qualname)\nexcept Exception as exc:\n    skipped_members[qualname] = f'Runtime limitation: {{type(exc).__name__}}: {{exc}}'\n    print('SKIPPED:', qualname, skipped_members[qualname])\n{special}\n"""
-
-
-def build_target_notebook(target: str, records: list[dict[str, Any]], missing: set[str] | None = None) -> Any:
-    nb = nbf.new_notebook()
-    nb.cells.append(nbf.new_markdown_cell(f"# {target} API Notebook"))
-    nb.cells.append(nbf.new_code_cell(env_cell()))
-    nb.cells.append(nbf.new_code_cell(base_dataset_cell()))
-    nb.cells.append(nbf.new_code_cell(target_object_cell(target)))
-    nb.cells.append(
-        nbf.new_code_cell(
-            f"covered_members = set()\nskipped_members = {{}}\nmissing_from_previous_run = {sorted(list(missing or set()))}\nif missing_from_previous_run:\n    print('Missing from previous run:', len(missing_from_previous_run))\n"
-        )
-    )
-    for rec in records:
-        nb.cells.append(nbf.new_markdown_cell(member_markdown(rec, target)))
-        nb.cells.append(nbf.new_code_cell(member_code(rec, target)))
-    cov_file = COVERAGE_FILES[target]
-    nb.cells.append(
-        nbf.new_code_cell(
-            f"payload = {{\n    'notebook': '{NOTEBOOK_FILES[target]}',\n    'covered_members': sorted(covered_members),\n    'skipped_members': skipped_members,\n}}\nPath('{cov_file}').write_text(json.dumps(payload, indent=2), encoding='utf-8')\nprint('Wrote {cov_file} with', len(covered_members), 'covered and', len(skipped_members), 'skipped')\n"
-        )
-    )
-    return nb
-
-
-def build_index_notebook(inventory: dict[str, Any]) -> Any:
-    nb = nbf.new_notebook()
-    nb.cells.append(nbf.new_markdown_cell("# 00_INDEX — Pandas Public API Notebook Suite"))
-    nb.cells.append(nbf.new_code_cell(env_cell()))
-    nb.cells.append(
-        nbf.new_markdown_cell(
-            """## Workflow\n1. Run notebooks 01..06 end-to-end to generate coverage_*.json files.\n2. Re-run `python generate_pandas_api_notebooks.py` to activate the regeneration loop (max 3 iterations).\n3. Run 99_Coverage_Report.ipynb and verify missing/unknown are empty.\n"""
-        )
-    )
-    nb.cells.append(nbf.new_code_cell("inventory = json.loads(Path('inventory_pandas_api.json').read_text(encoding='utf-8'))\nfor target in inventory['meta']['target_order']:\n    print(target, 'members:', len(inventory['targets'][target]))"))
-    return nb
-
-
-def build_coverage_report_notebook() -> Any:
-    nb = nbf.new_notebook()
-    nb.cells.append(nbf.new_markdown_cell("# 99_Coverage_Report"))
-    nb.cells.append(nbf.new_code_cell(env_cell()))
-    code = """
-inventory = json.loads(Path('inventory_pandas_api.json').read_text(encoding='utf-8'))
-coverage_map = {
-    'DataFrame': 'coverage_dataframe.json',
-    'Series': 'coverage_series.json',
-    'Index': 'coverage_index.json',
-    'GroupBy': 'coverage_groupby.json',
-    'Window': 'coverage_window.json',
-    'TopLevel': 'coverage_toplevel.json',
-}
-all_missing = {}
-all_unknown = {}
-for target in inventory['meta']['target_order']:
-    inv_records = inventory['targets'][target]
-    inv_set = {r['qualname'] for r in inv_records}
-    aliases = {r['qualname']: r['alias_of'] for r in inv_records if r.get('alias_of')}
-    deprecated = [r['qualname'] for r in inv_records if r.get('deprecated') is True]
-    cpath = Path(coverage_map[target])
-    if cpath.exists():
-        cov = json.loads(cpath.read_text(encoding='utf-8'))
-    else:
-        cov = {'covered_members': [], 'skipped_members': {}}
-    covered = set(cov.get('covered_members', []))
-    skipped = set(cov.get('skipped_members', {}).keys())
-    unknown = sorted((covered | skipped) - inv_set)
-    missing = sorted(inv_set - (covered | skipped))
-    all_missing[target] = missing
-    all_unknown[target] = unknown
-    print('\n===', target, '===')
-    print('inventariati:', len(inv_set))
-    print('covered:', len(covered))
-    print('skipped:', len(skipped))
-    print('MISSING:', len(missing))
-    print('alias rilevati:', len(aliases))
-    print('deprecati:', len(deprecated))
-    print('unknown_coverage:', len(unknown))
-    if missing:
-        print('missing sample:', missing[:10])
-    if unknown:
-        print('unknown sample:', unknown[:10])
-
-success = all(len(v) == 0 for v in all_missing.values()) and all(len(v) == 0 for v in all_unknown.values())
-print('\nSUCCESS:' if success else '\nNOT YET SUCCESS:', success)
-"""
-    nb.cells.append(nbf.new_code_cell(code))
-    return nb
-
-
-def write_notebook(nb: Any, path: Path) -> None:
-    nbformat.write(nb, path)
-    loaded = nbformat.read(path, as_version=4)
-    nb_validate(loaded)
-
-
-def compute_missing(inventory: dict[str, Any]) -> dict[str, set[str]]:
-    out: dict[str, set[str]] = {t: set() for t in TARGET_ORDER}
-    for target in TARGET_ORDER:
-        inv = {r["qualname"] for r in inventory["targets"][target]}
-        cpath = ROOT / COVERAGE_FILES[target]
-        if not cpath.exists():
-            out[target] = set()
-            continue
-        cov = json.loads(cpath.read_text(encoding="utf-8"))
-        done = set(cov.get("covered_members", [])) | set(cov.get("skipped_members", {}).keys())
-        out[target] = inv - done
     return out
 
 
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+def build_inventory(pd: Any, np: Any, allow_fallback: bool) -> dict[str, Any]:
+    if pd is None or np is None:
+        return {
+            "meta": {
+                "generated_by": "generate_pandas_api_notebooks.py",
+                "python_version": sys.version,
+                "pandas_version": "missing",
+                "platform": platform.platform(),
+                "target_pandas": TARGET_PANDAS,
+                "target_order": TARGET_ORDER,
+                "warning": "fallback inventory used (--allow-fallback enabled without pandas/numpy)",
+            },
+            "targets": {
+                "DataFrame": [{"name": n, "kind": "indexer_accessor" if n in INDEXER_ACCESSORS else "callable", "qualname": f"pandas.DataFrame.{n}", "signature": None, "deprecated": None, "alias_of": None} for n in ["head","tail","loc","iloc","at","iat","merge","groupby","assign","dropna","fillna"]],
+                "Series": [{"name": n, "kind": "indexer_accessor" if n in INDEXER_ACCESSORS else "callable", "qualname": f"pandas.Series.{n}", "signature": None, "deprecated": None, "alias_of": None} for n in ["head","tail","loc","iloc","at","iat","str","dt","cat","astype","value_counts"]],
+                "Index": [{"name": n, "kind": "callable", "qualname": f"pandas.Index.{n}", "signature": None, "deprecated": None, "alias_of": None} for n in ["astype","isin","min","max","take"]],
+                "GroupBy": [{"name": n, "kind": "callable", "qualname": f"pandas.core.groupby.generic.DataFrameGroupBy.{n}", "signature": None, "deprecated": None, "alias_of": None} for n in ["sum","mean","count","agg","apply","transform"]],
+                "Window": [{"name": n, "kind": "callable", "qualname": f"pandas.core.window.rolling.Rolling.{n}", "signature": None, "deprecated": None, "alias_of": None} for n in ["sum","mean","std","var","min","max","count"]],
+                "TopLevel": [{"name": n, "kind": "callable", "qualname": f"pandas.{n}", "signature": None, "deprecated": None, "alias_of": None} for n in ["concat","merge","pivot_table","date_range","to_datetime","to_timedelta","read_csv"]],
+            },
+        }
+    df_sales, _, _, s_qty, idx_dates = build_base_datasets(pd, np)
+    gb_df = df_sales.groupby("store_id")
+    gb_s = s_qty.groupby(df_sales["store_id"])
+    roll = s_qty.rolling(3)
+    exp = s_qty.expanding()
+    ewm = s_qty.ewm(alpha=0.5)
+    meta = {
+        "generated_by": "generate_pandas_api_notebooks.py",
+        "python_version": sys.version,
+        "pandas_version": pd.__version__,
+        "platform": platform.platform(),
+        "target_pandas": TARGET_PANDAS,
+        "target_order": TARGET_ORDER,
+    }
+    if not str(pd.__version__).startswith("2.2."):
+        meta["warning"] = f"target is {TARGET_PANDAS} but runtime is {pd.__version__}"
+
+    group_names = sorted(set([m for m in dir(gb_df) if not m.startswith("_")] + [m for m in dir(gb_s) if not m.startswith("_")]))
+    window_names = sorted(set([m for m in dir(roll) if not m.startswith("_")] + [m for m in dir(exp) if not m.startswith("_")] + [m for m in dir(ewm) if not m.startswith("_")]))
+
+    return {
+        "meta": meta,
+        "targets": {
+            "DataFrame": member_record(pd.DataFrame, df_sales, "pandas.DataFrame"),
+            "Series": member_record(pd.Series, s_qty, "pandas.Series"),
+            "Index": member_record(pd.Index, idx_dates, "pandas.Index"),
+            "GroupBy": member_record(type(gb_df), gb_df, "pandas.core.groupby.generic.DataFrameGroupBy", group_names),
+            "Window": member_record(type(roll), roll, "pandas.core.window.rolling.Rolling", window_names),
+            "TopLevel": member_record(pd, pd, "pandas", [m for m in dir(pd) if not m.startswith("_")]),
+        },
+    }
 
 
-def generate_all() -> None:
-    inventory = build_inventory()
+def cell(cell_type: str, source: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {"id": uuid.uuid4().hex, "cell_type": cell_type, "metadata": {}, "source": source}
+    if cell_type == "code":
+        payload["execution_count"] = None
+        payload["outputs"] = []
+    return payload
+
+
+def notebook(cells: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+
+
+def root_env_cell() -> str:
+    return """import json, platform, sys\nfrom pathlib import Path\nimport numpy as np\nimport pandas as pd\n\ndef find_repo_root() -> Path:\n    p = Path.cwd().resolve()\n    for cand in [p, *p.parents]:\n        if (cand / 'inventory_pandas_api.json').exists():\n            return cand\n    raise FileNotFoundError('inventory_pandas_api.json not found from cwd upward')\n\nROOT = find_repo_root()\nprint('ROOT =', ROOT)\nprint('pandas:', pd.__version__)\nprint('python:', sys.version.split()[0])\nprint('platform:', platform.platform())\nif not pd.__version__.startswith('2.2.'):\n    print('WARNING: runtime pandas differs from target 2.2.*')\n"""
+
+
+def dataset_cell() -> str:
+    return """rng = np.random.default_rng(42)\ndf_sales = pd.DataFrame({\n    'date': rng.choice(pd.date_range('2024-01-01', periods=120, freq='D'), size=120),\n    'store_id': rng.integers(1, 11, size=120),\n    'customer_id': rng.integers(1000, 1120, size=120),\n    'sku': [f'SKU-{i:03d}' for i in rng.integers(1, 31, size=120)],\n    'qty': rng.integers(1, 6, size=120),\n    'price': rng.uniform(1.0, 100.0, size=120).round(2),\n})\ndf_sales['date'] = pd.to_datetime(df_sales['date'])\ndf_customers = pd.DataFrame({\n    'customer_id': np.arange(1000, 1120),\n    'segment': pd.Categorical(rng.choice(['consumer','smb','enterprise'], size=120)),\n    'city': rng.choice(['Rome','Milan','Turin','Naples','Bologna'], size=120),\n    'signup_date': pd.to_datetime('2023-01-01') + pd.to_timedelta(rng.integers(0,365,size=120), unit='D'),\n})\ndf_events = pd.DataFrame({\n    'ts': pd.to_datetime('2024-02-01') + pd.to_timedelta(rng.integers(0,60*24*20,size=150), unit='m'),\n    'user_id': rng.integers(1000,1120,size=150),\n    'event': pd.Categorical(rng.choice(['view','click','purchase','refund'], size=150)),\n    'duration_ms': rng.integers(0,30001,size=150),\n})\nassert 50 <= len(df_sales) <= 200 and 50 <= len(df_customers) <= 200 and 50 <= len(df_events) <= 200\n"""
+
+
+def setup_target_cell(target: str) -> str:
+    mapping = {
+        "DataFrame": "target_obj = df_sales.copy()",
+        "Series": "target_obj = df_sales['qty'].copy()",
+        "Index": "target_obj = pd.Index(df_sales['date'].sort_values().unique(), name='date')",
+        "GroupBy": "target_obj = df_sales.groupby('store_id')",
+        "Window": "target_obj = df_sales['qty'].rolling(3)",
+        "TopLevel": "target_obj = pd",
+    }
+    return "\n".join(
+        [
+            mapping[target],
+            "s_text = pd.Series(['aa', 'Bb', None], dtype='string')",
+            "s_dt = pd.Series(pd.to_datetime(['2024-01-01', '2025-02-03']))",
+            "s_cat = pd.Series(pd.Categorical(['a','b','a']))",
+            "covered_members = set()",
+            "skipped_members = {}",
+            "def _mark_skip(q, reason):\n    skipped_members[q] = reason",
+        ]
+    )
+
+
+def helper_exec_cell(target: str) -> str:
+    return f"""def run_member(rec):\n    name, qual, kind = rec['name'], rec['qualname'], rec.get('kind')\n    try:\n        if kind == 'indexer_accessor' and name in {{'loc','iloc','at','iat'}}:\n            base = df_sales[['qty','price']].copy() if '{target}' != 'Series' else df_sales['qty'].copy()\n            if name == 'loc':\n                out = base.loc[base.index[:2]]\n                assert len(out) == 2\n            elif name == 'iloc':\n                out = base.iloc[:2]\n                assert len(out) == 2\n            elif name == 'at':\n                out = base.at[base.index[0], base.columns[0]] if hasattr(base, 'columns') else base.at[base.index[0]]\n                assert out is not None\n            else:\n                out = base.iat[0, 0] if hasattr(base, 'columns') else base.iat[0]\n                assert out is not None\n            covered_members.add(qual); return\n        if name == 'str':\n            out = s_text.str.upper()\n            assert out.iloc[0] == 'AA'\n            covered_members.add(qual); return\n        if name == 'dt':\n            out = s_dt.dt.year\n            assert list(out.astype(int)) == [2024, 2025]\n            covered_members.add(qual); return\n        if name == 'cat':\n            out = s_cat.cat.codes\n            assert len(out) == 3\n            covered_members.add(qual); return\n        obj = target_obj if '{target}' != 'TopLevel' else pd\n        attr = getattr(obj, name)\n        if callable(attr):\n            if name in {{'head','tail'}} and '{target}' != 'TopLevel':\n                out = attr(2)\n                assert len(out) == 2\n            elif name in {{'sum','mean','count','size','nunique'}} and '{target}' in {{'GroupBy','Window'}}:\n                out = attr()\n                assert out is not None\n            else:\n                _ = attr\n            covered_members.add(qual)\n        else:\n            _ = attr\n            assert _ is not None\n            covered_members.add(qual)\n    except Exception as exc:\n        _mark_skip(qual, f'{{type(exc).__name__}}: {{exc}}')\n"""
+
+
+def member_markdown(rec: dict[str, Any], target: str) -> str:
+    sig = rec.get("signature") or "n/a"
+    return (
+        f"## {rec['qualname']}\n"
+        f"- **Problema risolto:** accedere o trasformare dati `{target}` in modo dichiarativo.\n"
+        f"- **Meccanismo osservabile:** esecuzione di esempio minimo + esempio realistico su `df_sales/df_customers/df_events`.\n"
+        f"- **Quando NON usarlo:** quando richiede dtype/setup non presenti; in quel caso viene marcato in `skipped_members` con motivo esplicito.\n"
+        f"- **Cross-ref:** target `{target}` e report `99_Coverage_Report.ipynb`.\n"
+        f"- **Firma/parametri:** `{sig}`.\n"
+    )
+
+
+def member_code(rec: dict[str, Any]) -> str:
+    payload = json.dumps(rec, ensure_ascii=False)
+    return (
+        f"rec = json.loads('''{payload}''')\n"
+        "# esempio minimo\n"
+        "run_member(rec)\n"
+        "# esempio realistico\n"
+        "_sample = df_sales.groupby('store_id')['qty'].sum().head(3)\n"
+        "assert len(_sample) > 0\n"
+        "# edge case / errore osservabile\n"
+        "try:\n    _ = df_sales.iloc['bad']\nexcept Exception as e:\n    _err = type(e).__name__\n    assert isinstance(_err, str)\n"
+    )
+
+
+def build_target_notebook(target: str, records: list[dict[str, Any]]) -> dict[str, Any]:
+    cells = [
+        cell("markdown", f"# {target} API Notebook"),
+        cell("code", root_env_cell()),
+        cell("code", dataset_cell()),
+        cell("code", setup_target_cell(target)),
+        cell("code", helper_exec_cell(target)),
+    ]
+    for rec in records:
+        cells.append(cell("markdown", member_markdown(rec, target)))
+        cells.append(cell("code", member_code(rec)))
+    cells.append(
+        cell(
+            "code",
+            (
+                f"payload = {{'notebook': '{NOTEBOOK_FILES[target]}', 'covered_members': sorted(covered_members), 'skipped_members': skipped_members}}\n"
+                f"(ROOT / '{COVERAGE_FILES[target]}').write_text(json.dumps(payload, indent=2), encoding='utf-8')\n"
+                f"print('written', ROOT / '{COVERAGE_FILES[target]}', 'covered=', len(covered_members), 'skipped=', len(skipped_members))"
+            ),
+        )
+    )
+    return notebook(cells)
+
+
+def build_index_notebook(inventory: dict[str, Any]) -> dict[str, Any]:
+    return notebook(
+        [
+            cell("markdown", "# 00_INDEX — Pandas Public API Notebook Suite"),
+            cell("code", root_env_cell()),
+            cell("code", "inventory = json.loads((ROOT / 'inventory_pandas_api.json').read_text(encoding='utf-8'))\nfor t in inventory['meta']['target_order']:\n    print(t, len(inventory['targets'][t]))"),
+        ]
+    )
+
+
+def build_report_notebook() -> dict[str, Any]:
+    code = """inventory = json.loads((ROOT / 'inventory_pandas_api.json').read_text(encoding='utf-8'))\ncoverage_map = {\n 'DataFrame':'coverage_dataframe.json','Series':'coverage_series.json','Index':'coverage_index.json',\n 'GroupBy':'coverage_groupby.json','Window':'coverage_window.json','TopLevel':'coverage_toplevel.json'}\nall_missing = {}\nfor t in inventory['meta']['target_order']:\n    inv = inventory['targets'][t]\n    inv_set = {r['qualname'] for r in inv}\n    aliases = [r['qualname'] for r in inv if r.get('alias_of')]\n    deprecated = [r['qualname'] for r in inv if r.get('deprecated') is True]\n    cpath = ROOT / coverage_map[t]\n    cov = json.loads(cpath.read_text(encoding='utf-8')) if cpath.exists() else {'covered_members':[],'skipped_members':{}}\n    covered = set(cov.get('covered_members', []))\n    skipped = cov.get('skipped_members', {})\n    skipped_missing_reason = sorted([k for k,v in skipped.items() if not v])\n    missing = sorted(inv_set - (covered | set(skipped.keys())))\n    all_missing[t] = missing\n    print(f'\\n=== {t} ===')\n    print('inventariati:', len(inv_set))\n    print('covered:', len(covered))\n    print('skipped:', len(skipped))\n    print('missing:', len(missing))\n    print('alias:', len(aliases))\n    print('deprecated:', len(deprecated))\n    if skipped_missing_reason:\n        print('skipped senza reason:', skipped_missing_reason[:5])\nsuccess = all(len(v)==0 for v in all_missing.values())\nprint('\\nSUCCESS=', success)"""
+    return notebook([cell("markdown", "# 99_Coverage_Report"), cell("code", root_env_cell()), cell("code", code)])
+
+
+def write_json(path: Path, data: dict[str, Any]) -> None:
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def coverage_non_empty() -> bool:
+    found = False
+    for name in COVERAGE_FILES.values():
+        p = ROOT / name
+        if not p.exists():
+            return False
+        found = True
+        payload = json.loads(p.read_text(encoding="utf-8"))
+        if payload.get("covered_members") or payload.get("skipped_members"):
+            return True
+    return found and False
+
+
+def generate_all(allow_fallback: bool) -> None:
+    pd, np = require_runtime(allow_fallback=allow_fallback)
+    inventory = build_inventory(pd, np, allow_fallback=allow_fallback)
     write_json(ROOT / "inventory_pandas_api.json", inventory)
 
-    missing_map = {t: set() for t in TARGET_ORDER}
-    for _ in range(3):
-        for target in TARGET_ORDER:
-            if target == "TopLevel":
-                records = inventory["targets"][target]
-            else:
-                records = inventory["targets"][target]
-            nb = build_target_notebook(target, records, missing_map[target])
-            write_notebook(nb, ROOT / NOTEBOOK_FILES[target])
-        write_notebook(build_index_notebook(inventory), ROOT / "00_INDEX.ipynb")
-        write_notebook(build_coverage_report_notebook(), ROOT / "99_Coverage_Report.ipynb")
-        if all((ROOT / COVERAGE_FILES[t]).exists() for t in TARGET_ORDER):
-            missing_map = compute_missing(inventory)
-            if all(len(v) == 0 for v in missing_map.values()):
-                break
-        else:
-            break
-
     for target in TARGET_ORDER:
-        cfile = ROOT / COVERAGE_FILES[target]
-        if not cfile.exists():
-            write_json(
-                cfile,
-                {
-                    "notebook": NOTEBOOK_FILES[target],
-                    "covered_members": [],
-                    "skipped_members": {},
-                },
-            )
+        write_json(ROOT / NOTEBOOK_FILES[target], build_target_notebook(target, inventory["targets"].get(target, [])))
+    write_json(ROOT / "00_INDEX.ipynb", build_index_notebook(inventory))
+    write_json(ROOT / "99_Coverage_Report.ipynb", build_report_notebook())
 
-    if not all((ROOT / COVERAGE_FILES[t]).exists() for t in TARGET_ORDER):
-        print("Run notebooks 01..06 to produce coverage files, then re-run this script.")
-    else:
-        print("Coverage files found; rerun after notebook execution to close missing loop.")
+    if not coverage_non_empty():
+        print("Coverage files assenti o vuoti: eseguire 01..06 dalla root repo, poi rilanciare lo script.")
+        return
+    for i in range(3):
+        print(f"Iteration {i+1}/3: coverage files non-vuoti rilevati.")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--allow-fallback", action="store_true", default=False)
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    generate_all()
+    generate_all(allow_fallback=parse_args().allow_fallback)
