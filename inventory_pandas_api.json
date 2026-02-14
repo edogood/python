@@ -1,0 +1,576 @@
+{
+  "meta": {
+    "generated_by": "generate_pandas_api_notebooks.py",
+    "python_version": "3.10.19 (main, Jan 12 2026, 17:41:56) [GCC 13.3.0]",
+    "pandas_version": "missing",
+    "platform": "Linux-6.12.47-x86_64-with-glibc2.39",
+    "target_pandas": "2.2.*",
+    "target_order": [
+      "DataFrame",
+      "Series",
+      "Index",
+      "GroupBy",
+      "Window",
+      "TopLevel"
+    ],
+    "warning": "pandas/numpy not installed in generator environment; fallback inventory used"
+  },
+  "targets": {
+    "DataFrame": [
+      {
+        "name": "assign",
+        "kind": "callable",
+        "qualname": "pandas.DataFrame.assign",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "astype",
+        "kind": "callable",
+        "qualname": "pandas.DataFrame.astype",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "at",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.DataFrame.at",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "dropna",
+        "kind": "callable",
+        "qualname": "pandas.DataFrame.dropna",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "fillna",
+        "kind": "callable",
+        "qualname": "pandas.DataFrame.fillna",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "groupby",
+        "kind": "callable",
+        "qualname": "pandas.DataFrame.groupby",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "head",
+        "kind": "callable",
+        "qualname": "pandas.DataFrame.head",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "iat",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.DataFrame.iat",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "iloc",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.DataFrame.iloc",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "join",
+        "kind": "callable",
+        "qualname": "pandas.DataFrame.join",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "loc",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.DataFrame.loc",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "merge",
+        "kind": "callable",
+        "qualname": "pandas.DataFrame.merge",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "pivot_table",
+        "kind": "callable",
+        "qualname": "pandas.DataFrame.pivot_table",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "tail",
+        "kind": "callable",
+        "qualname": "pandas.DataFrame.tail",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      }
+    ],
+    "Series": [
+      {
+        "name": "astype",
+        "kind": "callable",
+        "qualname": "pandas.Series.astype",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "at",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.Series.at",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "cat",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.Series.cat",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "dt",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.Series.dt",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "fillna",
+        "kind": "callable",
+        "qualname": "pandas.Series.fillna",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "groupby",
+        "kind": "callable",
+        "qualname": "pandas.Series.groupby",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "head",
+        "kind": "callable",
+        "qualname": "pandas.Series.head",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "iat",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.Series.iat",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "iloc",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.Series.iloc",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "loc",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.Series.loc",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "rolling",
+        "kind": "callable",
+        "qualname": "pandas.Series.rolling",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "str",
+        "kind": "indexer_accessor",
+        "qualname": "pandas.Series.str",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "tail",
+        "kind": "callable",
+        "qualname": "pandas.Series.tail",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "value_counts",
+        "kind": "callable",
+        "qualname": "pandas.Series.value_counts",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      }
+    ],
+    "Index": [
+      {
+        "name": "astype",
+        "kind": "callable",
+        "qualname": "pandas.Index.astype",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "dtype",
+        "kind": "callable",
+        "qualname": "pandas.Index.dtype",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "isin",
+        "kind": "callable",
+        "qualname": "pandas.Index.isin",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "max",
+        "kind": "callable",
+        "qualname": "pandas.Index.max",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "min",
+        "kind": "callable",
+        "qualname": "pandas.Index.min",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "name",
+        "kind": "callable",
+        "qualname": "pandas.Index.name",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "shape",
+        "kind": "callable",
+        "qualname": "pandas.Index.shape",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "size",
+        "kind": "callable",
+        "qualname": "pandas.Index.size",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "take",
+        "kind": "callable",
+        "qualname": "pandas.Index.take",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      }
+    ],
+    "GroupBy": [
+      {
+        "name": "agg",
+        "kind": "callable",
+        "qualname": "pandas.core.groupby.generic.DataFrameGroupBy.agg",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "apply",
+        "kind": "callable",
+        "qualname": "pandas.core.groupby.generic.DataFrameGroupBy.apply",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "count",
+        "kind": "callable",
+        "qualname": "pandas.core.groupby.generic.DataFrameGroupBy.count",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "head",
+        "kind": "callable",
+        "qualname": "pandas.core.groupby.generic.DataFrameGroupBy.head",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "mean",
+        "kind": "callable",
+        "qualname": "pandas.core.groupby.generic.DataFrameGroupBy.mean",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "nunique",
+        "kind": "callable",
+        "qualname": "pandas.core.groupby.generic.DataFrameGroupBy.nunique",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "size",
+        "kind": "callable",
+        "qualname": "pandas.core.groupby.generic.DataFrameGroupBy.size",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "sum",
+        "kind": "callable",
+        "qualname": "pandas.core.groupby.generic.DataFrameGroupBy.sum",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "tail",
+        "kind": "callable",
+        "qualname": "pandas.core.groupby.generic.DataFrameGroupBy.tail",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "transform",
+        "kind": "callable",
+        "qualname": "pandas.core.groupby.generic.DataFrameGroupBy.transform",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      }
+    ],
+    "Window": [
+      {
+        "name": "apply",
+        "kind": "callable",
+        "qualname": "pandas.core.window.rolling.Rolling.apply",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "count",
+        "kind": "callable",
+        "qualname": "pandas.core.window.rolling.Rolling.count",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "max",
+        "kind": "callable",
+        "qualname": "pandas.core.window.rolling.Rolling.max",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "mean",
+        "kind": "callable",
+        "qualname": "pandas.core.window.rolling.Rolling.mean",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "min",
+        "kind": "callable",
+        "qualname": "pandas.core.window.rolling.Rolling.min",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "std",
+        "kind": "callable",
+        "qualname": "pandas.core.window.rolling.Rolling.std",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "sum",
+        "kind": "callable",
+        "qualname": "pandas.core.window.rolling.Rolling.sum",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "var",
+        "kind": "callable",
+        "qualname": "pandas.core.window.rolling.Rolling.var",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      }
+    ],
+    "TopLevel": [
+      {
+        "name": "concat",
+        "kind": "callable",
+        "qualname": "pandas.concat",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "crosstab",
+        "kind": "callable",
+        "qualname": "pandas.crosstab",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "cut",
+        "kind": "callable",
+        "qualname": "pandas.cut",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "date_range",
+        "kind": "callable",
+        "qualname": "pandas.date_range",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "get_dummies",
+        "kind": "callable",
+        "qualname": "pandas.get_dummies",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "merge",
+        "kind": "callable",
+        "qualname": "pandas.merge",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "pivot_table",
+        "kind": "callable",
+        "qualname": "pandas.pivot_table",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "qcut",
+        "kind": "callable",
+        "qualname": "pandas.qcut",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "read_csv",
+        "kind": "callable",
+        "qualname": "pandas.read_csv",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "read_excel",
+        "kind": "callable",
+        "qualname": "pandas.read_excel",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "read_parquet",
+        "kind": "callable",
+        "qualname": "pandas.read_parquet",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "to_datetime",
+        "kind": "callable",
+        "qualname": "pandas.to_datetime",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      },
+      {
+        "name": "to_timedelta",
+        "kind": "callable",
+        "qualname": "pandas.to_timedelta",
+        "deprecated": null,
+        "alias_of": null,
+        "signature": null
+      }
+    ]
+  }
+}
